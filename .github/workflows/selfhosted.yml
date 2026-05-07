@@ -101,10 +101,10 @@ jobs:
 
           # Format: ROM_FOLDER + _ + DEVICE_NAME → script URL
           case "${ROM}_${DEVICE}" in
-            axion_X6882) SCRIPT_URL="https://raw.githubusercontent.com/KAMU/REPO/main/scripts/ax2.sh"  ;;
-            axion_chime) SCRIPT_URL="https://raw.githubusercontent.com/KAMU/REPO/main/scripts/ach.sh" ;;
-            inf_X6882) SCRIPT_URL="https://raw.githubusercontent.com/KAMU/REPO/main/scripts/ix2.sh"  ;;
-            inf_chime) SCRIPT_URL="https://raw.githubusercontent.com/KAMU/REPO/main/scripts/ich.sh"  ;;
+            axion_X6882) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ax2.sh"  ;;
+            axion_chime) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ach.sh" ;;
+            inf_X6882) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ix2.sh"  ;;
+            inf_chime) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ich.sh"  ;;
             
             # tambah kombinasi lain di sini
             *)
