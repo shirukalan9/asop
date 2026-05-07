@@ -175,7 +175,7 @@ jobs:
           echo "Menjalankan build script: ${{ github.event.inputs.BUILD_SCRIPT_URL }}"
           echo "Device: ${{ github.event.inputs.DEVICE_NAME }}"
           
-          crave run --no-patch -- "bash <(curl -s ${{ github.event.inputs.BUILD_SCRIPT_URL }})"
+          crave run --no-patch "curl -sSL ${{ github.event.inputs.BUILD_SCRIPT_URL }} | bash"    
         timeout-minutes: 1440
         env:
           BUILD_SCRIPT_URL: ${{ github.event.inputs.BUILD_SCRIPT_URL }}
