@@ -154,15 +154,16 @@ jobs:
       - name: Update rom_list.txt (if new ROM)
         run: |
           ROM="${{ github.event.inputs.ROM_FOLDER }}"
+          git pull origin main
           if grep -qE "^${ROM}(:|$)" rom_list.txt 2>/dev/null; then
             echo "$ROM sudah ada di rom_list.txt, skip."
           else
-            echo "${ROM}:${ROM}" >> rom_list.txt
+            echo "${ROM}" >> rom_list.txt
             git config user.email "actions@github.com"
             git config user.name "GitHub Actions"
             git add rom_list.txt
             git commit -m "add ${ROM} to rom_list"
-            git push
+            git push origin main
             echo "rom_list.txt updated dengan ${ROM}."
           fi
 
