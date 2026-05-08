@@ -156,7 +156,8 @@ jobs:
       - name: Update rom_list.txt (if new ROM)
         run: |
           ROM="${{ github.event.inputs.ROM_FOLDER }}"
-          git pull origin main
+          git fetch origin main
+          git checkout origin/main -- rom_list.txt
           if grep -qE "^${ROM}(:|$)" rom_list.txt 2>/dev/null; then
             echo "$ROM sudah ada di rom_list.txt, skip."
           else
@@ -166,7 +167,6 @@ jobs:
             git add rom_list.txt
             git commit -m "add ${ROM} to rom_list"
             git push origin main
-            echo "rom_list.txt updated dengan ${ROM}."
           fi
 
       - name: Validate ROM folder
