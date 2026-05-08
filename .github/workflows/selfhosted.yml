@@ -84,6 +84,7 @@ jobs:
   # JOB 2: Build (jalan di dalam devspace)
   # ─────────────────────────────────────────────
   build:
+    timeout-minutes: 1440
     name: Build ROM
     needs: Start-Runner
     runs-on: self-hosted
@@ -196,7 +197,6 @@ jobs:
         run: |
           cd "$ROM_PATH"
           crave run --no-patch -- "curl -sSL $SCRIPT_URL | bash"
-        timeout-minutes: 1440
 
       - name: Pull & Upload ROM
         if: success()
