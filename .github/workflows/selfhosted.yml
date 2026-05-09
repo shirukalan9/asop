@@ -31,7 +31,7 @@ on:
       AUTO_REQUEUE:
         description: 'Otomatis queue ulang setelah build selesai?'
         required: false
-        default: 'false'p
+        default: 'false'
         type: choice
         options:
           - 'false'
