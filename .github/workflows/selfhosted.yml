@@ -29,18 +29,29 @@ on:
           - 'yes'
 
       AUTO_REQUEUE:
-        description: 'Otomatis queue ulang setelah build selesai?'
+        description: 'Auto requeue setelah build?'
         required: false
         default: 'false'
         type: choice
         options:
           - 'false'
           - 'true'
-          
+          - 'always'
+
+      MAX_REQUEUE:
+        description: 'Maksimal requeue (untuk mode always)'
+        required: false
+        default: '3'
+
+      REQUEUE_COUNT:
+        description: 'Counter requeue saat ini (otomatis, jangan diubah manual)'
+        required: false
+        default: '0'
+
 concurrency:
   group: ${{ github.repository_owner }}
   cancel-in-progress: false
-  
+
 jobs:
   # ─────────────────────────────────────────────
   # JOB 1: Start self-hosted runner di devspace
@@ -102,24 +113,30 @@ jobs:
           ROM="${{ github.event.inputs.ROM_FOLDER }}"
           DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
 
-          # Format: ROM_FOLDER + _ + DEVICE_NAME → script URL
           case "${ROM}_${DEVICE}" in
-            ax_X6882) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ax-x2.sh"  ;;
-            ax_chime) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ax-ch.sh" ;;
-            if_X6882) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/if-x2.sh"  ;;
-            if_chime) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/if-ch.sh"  ;;
+            ax_X6882)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ax-x2.sh"  ;;
+            ax_chime)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ax-ch.sh" ;;
+            if_X6882)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/if-x2.sh"  ;;
+            if_chime)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/if-ch.sh"  ;;
             luna_X6882) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/lun-x2.sh"  ;;
-            clv_X6882) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/clv-x2.sh"  ;;
-            
+            clv_X6882)  SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/clv-x2.sh"  ;;
+
             # tambah kombinasi lain di sini
             *)
               echo "ERROR: Tidak ada script untuk ROM=$ROM DEVICE=$DEVICE"
               exit 1
             ;;
           esac
-          
+
           BUILD_START=$(date +%s)
           START_WIB=$(TZ='Asia/Jakarta' date '+%H:%M WIB, %d %b %Y')
+
+          # Info requeue untuk notif
+          case "${{ github.event.inputs.AUTO_REQUEUE }}" in
+            true)   REQUEUE_INFO="Sekali ✅" ;;
+            always) REQUEUE_INFO="Selalu ♾️ (${{ github.event.inputs.REQUEUE_COUNT }}/${{ github.event.inputs.MAX_REQUEUE }})" ;;
+            *)      REQUEUE_INFO="" ;;
+          esac
 
           echo "ROM=$ROM"                        >> $GITHUB_ENV
           echo "DEVICE=$DEVICE"                  >> $GITHUB_ENV
@@ -127,6 +144,8 @@ jobs:
           echo "ROM_PATH=/crave-devspaces/$ROM"  >> $GITHUB_ENV
           echo "BUILD_START=$BUILD_START"        >> $GITHUB_ENV
           echo "START_WIB=$START_WIB"            >> $GITHUB_ENV
+          echo "REQUEUE_INFO=$REQUEUE_INFO"      >> $GITHUB_ENV
+          echo "BUILD_EXIT_CODE=0"               >> $GITHUB_ENV
 
       - name: Cleanup runner workspace
         run: rm -rf $GITHUB_WORKSPACE/*
@@ -134,11 +153,15 @@ jobs:
       - name: Notify queue
         continue-on-error: true
         run: |
+          REQUEUE_LINE=""
+          if [ -n "$REQUEUE_INFO" ]; then
+            REQUEUE_LINE=$(printf '\n🔁 Requeue: %s' "$REQUEUE_INFO")
+          fi
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
             -d chat_id="${{ secrets.TELEGRAM_TO }}" \
             -d parse_mode="Markdown" \
-            -d text="$(printf '🔧 *Build Queued*\n\n📱 Device: `%s`\n🗂 ROM: `%s`\n🕐 Mulai: %s\n⏳ Menunggu giliran di queue Crave...' \
-              "$DEVICE" "$ROM" "$START_WIB")"
+            -d text="$(printf '🔧 *Build Queued*\n\n📱 Device: `%s`\n🗂 ROM: `%s`%s\n🕐 Mulai: %s\n⏳ Menunggu giliran di queue Crave...' \
+              "$DEVICE" "$ROM" "$REQUEUE_LINE" "$START_WIB")"
 
       - name: Setup ROM folder (if new)
         run: |
@@ -198,7 +221,11 @@ jobs:
       - name: Start build
         run: |
           cd "$ROM_PATH"
+          set +e
           crave run --no-patch -- "curl -sSL $SCRIPT_URL | bash"
+          BUILD_EXIT_CODE=$?
+          echo "BUILD_EXIT_CODE=$BUILD_EXIT_CODE" >> $GITHUB_ENV
+          exit $BUILD_EXIT_CODE
 
       - name: Pull & Upload ROM
         if: success()
@@ -302,13 +329,64 @@ jobs:
           cd "$ROM_PATH"
           crave stop --all || true
 
-      # ── Auto requeue ─────────────────────────────────────────────────
-      # Trigger diri sendiri sekali dengan AUTO_REQUEUE=false
-      # Tidak jalan kalau di-cancel
+      # ── Auto requeue ──────────────────────────────────────────────
+      # Jalan kalau tidak di-cancel dari GitHub Actions
+      # Stop jika: exit code 130 (cancel dari Crave) atau sudah ada pending
       - name: Auto requeue
-        if: ${{ github.event.inputs.AUTO_REQUEUE == 'true' && !cancelled() }}
+        if: ${{ !cancelled() && (github.event.inputs.AUTO_REQUEUE == 'true' || github.event.inputs.AUTO_REQUEUE == 'always') }}
         run: |
-          echo "AUTO_REQUEUE aktif, trigger workflow ulang..."
+          # Stop jika Crave di-cancel oleh user/admin (exit code 130)
+          if [ "$BUILD_EXIT_CODE" = "130" ]; then
+            echo "Build di-cancel dari Crave (exit 130), stop requeue."
+            exit 0
+          fi
+
+          # Cek apakah sudah ada workflow pending (user trigger manual via bot)
+          PENDING=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=queued&per_page=1" \
+            | jq '.total_count')
+
+          if [ "$PENDING" -gt 0 ]; then
+            echo "Sudah ada workflow pending, skip auto requeue."
+            exit 0
+          fi
+
+          # Mode 'true': requeue sekali saja
+          if [ "${{ github.event.inputs.AUTO_REQUEUE }}" = "true" ]; then
+            echo "Requeue sekali, next AUTO_REQUEUE=false..."
+            curl -s -X POST \
+              -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/selfhosted.yml/dispatches" \
+              -d "{
+                \"ref\": \"main\",
+                \"inputs\": {
+                  \"ROM_FOLDER\":    \"${{ github.event.inputs.ROM_FOLDER }}\",
+                  \"DEVICE_NAME\":   \"${{ github.event.inputs.DEVICE_NAME }}\",
+                  \"CLEAN_BUILD\":   \"no\",
+                  \"AUTO_REQUEUE\":  \"false\",
+                  \"MAX_REQUEUE\":   \"${{ github.event.inputs.MAX_REQUEUE }}\",
+                  \"REQUEUE_COUNT\": \"0\"
+                }
+              }"
+            echo "Triggered sekali."
+            exit 0
+          fi
+
+          # Mode 'always': cek apakah sudah mencapai batas
+          CURRENT_COUNT=${{ github.event.inputs.REQUEUE_COUNT }}
+          MAX=${{ github.event.inputs.MAX_REQUEUE }}
+
+          if [ "$CURRENT_COUNT" -ge "$MAX" ]; then
+            echo "Sudah requeue $CURRENT_COUNT/$MAX kali, stop."
+            exit 0
+          fi
+
+          NEXT_COUNT=$((CURRENT_COUNT + 1))
+          echo "Auto requeue ke-$NEXT_COUNT dari $MAX..."
+
           curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
             -H "Accept: application/vnd.github+json" \
@@ -316,10 +394,12 @@ jobs:
             -d "{
               \"ref\": \"main\",
               \"inputs\": {
-                \"ROM_FOLDER\":   \"${{ github.event.inputs.ROM_FOLDER }}\",
-                \"DEVICE_NAME\":  \"${{ github.event.inputs.DEVICE_NAME }}\",
-                \"CLEAN_BUILD\":  \"no\",
-                \"AUTO_REQUEUE\": \"false\"
+                \"ROM_FOLDER\":    \"${{ github.event.inputs.ROM_FOLDER }}\",
+                \"DEVICE_NAME\":   \"${{ github.event.inputs.DEVICE_NAME }}\",
+                \"CLEAN_BUILD\":   \"no\",
+                \"AUTO_REQUEUE\":  \"always\",
+                \"MAX_REQUEUE\":   \"$MAX\",
+                \"REQUEUE_COUNT\": \"$NEXT_COUNT\"
               }
             }"
-          echo "Workflow triggered ulang dengan AUTO_REQUEUE=false."
+          echo "Triggered, count $NEXT_COUNT/$MAX."
