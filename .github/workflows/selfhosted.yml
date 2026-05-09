@@ -31,12 +31,16 @@ on:
       AUTO_REQUEUE:
         description: 'Otomatis queue ulang setelah build selesai?'
         required: false
-        default: 'false'
+        default: 'false'p
         type: choice
         options:
           - 'false'
           - 'true'
-
+          
+concurrency:
+  group: ${{ github.repository_owner }}
+  cancel-in-progress: false
+  
 jobs:
   # ─────────────────────────────────────────────
   # JOB 1: Start self-hosted runner di devspace
@@ -88,8 +92,6 @@ jobs:
     name: Build ROM
     needs: Start-Runner
     runs-on: self-hosted
-    concurrency:
-      group: ${{ github.repository_owner }}
     steps:
 
       - name: Checkout
