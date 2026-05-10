@@ -131,7 +131,6 @@ jobs:
           BUILD_START=$(date +%s)
           START_WIB=$(TZ='Asia/Jakarta' date '+%H:%M WIB, %d %b %Y')
 
-          # Info requeue untuk notif
           case "${{ github.event.inputs.AUTO_REQUEUE }}" in
             true)   REQUEUE_INFO="Sekali ✅" ;;
             always) REQUEUE_INFO="Selalu ♾️ (${{ github.event.inputs.REQUEUE_COUNT }}/${{ github.event.inputs.MAX_REQUEUE }})" ;;
@@ -330,8 +329,8 @@ jobs:
           crave stop --all || true
 
       # ── Auto requeue ──────────────────────────────────────────────
-      # Jalan kalau tidak di-cancel dari GitHub Actions
-      # Stop jika: exit code 130 (cancel dari Crave) atau sudah ada pending
+      # Mode 'true' : requeue sekali, langsung trigger tanpa cek pending
+      # Mode 'always': requeue sampai MAX_REQUEUE, cek pending dulu
       - name: Auto requeue
         if: ${{ !cancelled() && (github.event.inputs.AUTO_REQUEUE == 'true' || github.event.inputs.AUTO_REQUEUE == 'always') }}
         run: |
@@ -341,21 +340,7 @@ jobs:
             exit 0
           fi
 
-          sleep 7
-          
-          # Cek apakah sudah ada workflow pending (user trigger manual via bot)
-          PENDING=$(curl -s \
-            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=queued&per_page=1" \
-            | jq '.total_count')
-
-          if [ "$PENDING" -gt 0 ]; then
-            echo "Sudah ada workflow pending, skip auto requeue."
-            exit 0
-          fi
-
-          # Mode 'true': requeue sekali saja
+          # ── Mode 'true': requeue sekali langsung ─────────────────
           if [ "${{ github.event.inputs.AUTO_REQUEUE }}" = "true" ]; then
             echo "Requeue sekali, next AUTO_REQUEUE=false..."
             curl -s -X POST \
@@ -377,7 +362,20 @@ jobs:
             exit 0
           fi
 
-          # Mode 'always': cek apakah sudah mencapai batas
+          # ── Mode 'always': cek pending dulu ──────────────────────
+          sleep 10
+
+          PENDING=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=queued&per_page=1" \
+            | jq '.total_count // 0')
+
+          if [ "$PENDING" -gt 0 ]; then
+            echo "Sudah ada workflow pending, skip auto requeue."
+            exit 0
+          fi
+
           CURRENT_COUNT=${{ github.event.inputs.REQUEUE_COUNT }}
           MAX=${{ github.event.inputs.MAX_REQUEUE }}
 
