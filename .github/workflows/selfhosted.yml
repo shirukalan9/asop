@@ -1,0 +1,408 @@
+#
+# Crave AOSP Builder - Self Hosted
+# Simplified for single user, AOSP base (projectID 35)
+#
+
+name: Crave Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      ROM_FOLDER:
+        description: 'Nama folder ROM di /crave-devspaces/'
+        required: true
+        default: 'axion'
+
+      DEVICE_NAME:
+        description: 'Device codename'
+        required: false
+        default: 'X6882'
+
+      CLEAN_BUILD:
+        description: 'Hapus out/ sebelum build?'
+        required: false
+        default: 'no'
+        type: choice
+        options:
+          - 'no'
+          - 'yes'
+
+      AUTO_REQUEUE:
+        description: 'Auto requeue setelah build?'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+          - 'always'
+
+      MAX_REQUEUE:
+        description: 'Maksimal requeue (untuk mode always)'
+        required: false
+        default: '3'
+
+      REQUEUE_COUNT:
+        description: 'Counter requeue saat ini (otomatis, jangan diubah manual)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: ${{ github.repository_owner }}
+  cancel-in-progress: false
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Start self-hosted runner di devspace
+  # ─────────────────────────────────────────────
+  Start-Runner:
+    name: Start Runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tmux
+        run: sudo apt-get install -y tmux
+
+      - name: Setup crave
+        run: |
+          mkdir -p ${HOME}/bin/
+          curl -s https://raw.githubusercontent.com/accupara/crave/master/get_crave.sh | bash -s --
+          mv ${PWD}/crave ${HOME}/bin/
+          sudo ln -sf /home/${USER}/bin/crave /usr/bin/crave
+          envsubst < ${PWD}/crave.conf.sample >> ${PWD}/crave.conf
+          rm -rf ${PWD}/crave.conf.sample
+        env:
+          CRAVE_USERNAME: ${{ secrets.CRAVE_USERNAME }}
+          CRAVE_TOKEN: ${{ secrets.CRAVE_TOKEN }}
+
+      - name: Start runner in devspace
+        run: |
+          crave -n devspace -- "
+            if [ ! -f actions-runner/run.sh ]; then
+              echo 'ERROR: Runner not found! Run configure-runner workflow first.'
+              exit 1
+            fi
+
+            if tmux has-session -t ghactions 2>/dev/null; then
+              echo 'Runner already running, skipping.'
+            else
+              tmux new-session -d -s ghactions
+              tmux send-keys -t ghactions './actions-runner/run.sh' Enter
+              echo 'Runner started.'
+            fi
+          "
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Build (jalan di dalam devspace)
+  # ─────────────────────────────────────────────
+  build:
+    timeout-minutes: 1440
+    name: Build ROM
+    needs: Start-Runner
+    runs-on: self-hosted
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve script & setup env
+        run: |
+          ROM="${{ github.event.inputs.ROM_FOLDER }}"
+          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+
+          case "${ROM}_${DEVICE}" in
+            ax_X6882)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ax-x2.sh"  ;;
+            ax_chime)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/ax-ch.sh" ;;
+            if_X6882)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/if-x2.sh"  ;;
+            if_chime)   SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/if-ch.sh"  ;;
+            luna_X6882) SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/lun-x2.sh"  ;;
+            clv_X6882)  SCRIPT_URL="https://raw.githubusercontent.com/shirukalan9/zx/main/scripts/clv-x2.sh"  ;;
+
+            # tambah kombinasi lain di sini
+            *)
+              echo "ERROR: Tidak ada script untuk ROM=$ROM DEVICE=$DEVICE"
+              exit 1
+            ;;
+          esac
+
+          BUILD_START=$(date +%s)
+          START_WIB=$(TZ='Asia/Jakarta' date '+%H:%M WIB, %d %b %Y')
+
+          case "${{ github.event.inputs.AUTO_REQUEUE }}" in
+            true)   REQUEUE_INFO="Sekali ✅" ;;
+            always) REQUEUE_INFO="Selalu ♾️ (${{ github.event.inputs.REQUEUE_COUNT }}/${{ github.event.inputs.MAX_REQUEUE }})" ;;
+            *)      REQUEUE_INFO="" ;;
+          esac
+
+          echo "ROM=$ROM"                        >> $GITHUB_ENV
+          echo "DEVICE=$DEVICE"                  >> $GITHUB_ENV
+          echo "SCRIPT_URL=$SCRIPT_URL"          >> $GITHUB_ENV
+          echo "ROM_PATH=/crave-devspaces/$ROM"  >> $GITHUB_ENV
+          echo "BUILD_START=$BUILD_START"        >> $GITHUB_ENV
+          echo "START_WIB=$START_WIB"            >> $GITHUB_ENV
+          echo "REQUEUE_INFO=$REQUEUE_INFO"      >> $GITHUB_ENV
+          echo "BUILD_EXIT_CODE=0"               >> $GITHUB_ENV
+
+      - name: Cleanup runner workspace
+        run: rm -rf $GITHUB_WORKSPACE/*
+
+      - name: Notify queue
+        continue-on-error: true
+        run: |
+          REQUEUE_LINE=""
+          if [ -n "$REQUEUE_INFO" ]; then
+            REQUEUE_LINE=$(printf '\n🔁 Requeue: %s' "$REQUEUE_INFO")
+          fi
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_TO }}" \
+            -d parse_mode="Markdown" \
+            -d text="$(printf '🔧 *Build Queued*\n\n📱 Device: `%s`\n🗂 ROM: `%s`%s\n🕐 Mulai: %s\n⏳ Menunggu giliran di queue Crave...' \
+              "$DEVICE" "$ROM" "$REQUEUE_LINE" "$START_WIB")"
+
+      - name: Setup ROM folder (if new)
+        run: |
+          if [ -d "$ROM_PATH/.repo" ]; then
+            echo "ROM folder sudah ada, skip setup."
+          else
+            echo "Setup ROM baru di $ROM_PATH"
+            mkdir -p "$ROM_PATH"
+            cd "$ROM_PATH"
+            repo init \
+              -u https://android.googlesource.com/platform/manifest.git \
+              -b master \
+              --depth=1
+            crave set --projectID 35
+            echo "Setup selesai."
+          fi
+
+      - name: Update rom_list.txt (if new ROM)
+        run: |
+          ROM="${{ github.event.inputs.ROM_FOLDER }}"
+          git fetch origin main
+          git checkout origin/main -- rom_list.txt
+          if grep -qE "^${ROM}(:|$)" rom_list.txt 2>/dev/null; then
+            echo "$ROM sudah ada di rom_list.txt, skip."
+          else
+            echo "${ROM}" >> rom_list.txt
+            git config user.email "actions@github.com"
+            git config user.name "GitHub Actions"
+            git add rom_list.txt
+            git commit -m "add ${ROM} to rom_list"
+            git push origin main
+          fi
+
+      - name: Validate ROM folder
+        run: |
+          if [ ! -d "$ROM_PATH/.repo" ]; then
+            echo "ERROR: $ROM_PATH tidak valid atau repo init gagal!"
+            exit 1
+          fi
+          echo "ROM folder valid: $ROM_PATH"
+
+      - name: Push signing keys
+        run: |
+          cd "$ROM_PATH"
+          WORKSPACE_PATH=$(crave ssh -- pwd | grep -v Select | sed 's/\r//g')
+          echo "Build workspace: $WORKSPACE_PATH"
+          crave push /crave-devspaces/vendor/ -d "${WORKSPACE_PATH}/vendor/"
+          echo "Keys pushed."
+
+      - name: Clean build
+        if: ${{ github.event.inputs.CLEAN_BUILD == 'yes' }}
+        run: |
+          cd "$ROM_PATH"
+          crave ssh -- "rm -rf out/" || true
+          echo "out/ dibersihkan."
+
+      - name: Start build
+        run: |
+          cd "$ROM_PATH"
+          set +e
+          crave run --no-patch -- "curl -sSL $SCRIPT_URL | bash"
+          BUILD_EXIT_CODE=$?
+          echo "BUILD_EXIT_CODE=$BUILD_EXIT_CODE" >> $GITHUB_ENV
+          exit $BUILD_EXIT_CODE
+
+      - name: Pull & Upload ROM
+        if: success()
+        run: |
+          cd "$ROM_PATH"
+
+          echo "Pulling zip dari build workspace..."
+          crave pull out/target/product/*/*.zip
+
+          LATEST_ZIP=$(find "$ROM_PATH" -name "*.zip" ! -name "*ota*" \
+            -printf "%T@ %p\n" | sort -n | tail -1 | awk '{print $2}')
+
+          if [ -z "$LATEST_ZIP" ]; then
+            echo "ERROR: Tidak ada zip ditemukan!"
+            exit 1
+          fi
+
+          FILENAME=$(basename "$LATEST_ZIP")
+          echo "ZIP: $FILENAME"
+
+          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          LINK=$(curl -s -F "file=@${LATEST_ZIP}" "https://${SERVER}.gofile.io/uploadFile" \
+            | jq -r '.data.downloadPage')
+
+          echo "GOFILE_LINK=$LINK"      >> $GITHUB_ENV
+          echo "ROM_FILENAME=$FILENAME" >> $GITHUB_ENV
+
+      - name: Calculate duration
+        if: always()
+        run: |
+          END=$(date +%s)
+          ELAPSED=$(( END - BUILD_START ))
+          HOURS=$(( ELAPSED / 3600 ))
+          MINUTES=$(( (ELAPSED % 3600) / 60 ))
+          END_WIB=$(TZ='Asia/Jakarta' date '+%H:%M WIB, %d %b %Y')
+
+          if [ $HOURS -gt 0 ]; then
+            DURATION="${HOURS}j ${MINUTES}m"
+          else
+            DURATION="${MINUTES}m"
+          fi
+
+          echo "END_WIB=$END_WIB"   >> $GITHUB_ENV
+          echo "DURATION=$DURATION" >> $GITHUB_ENV
+
+      - name: Notify success
+        if: success()
+        continue-on-error: true
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_TO }}" \
+            -d parse_mode="Markdown" \
+            -d text="$(printf '🎉 *Build Selesai!*\n\n✅ Status: Sukses\n📱 Device: `%s`\n🗂 ROM: `%s`\n📁 File: `%s`\n\n🕐 Mulai: %s\n🕑 Selesai: %s\n⏱ Durasi: %s\n\n📥 *Download:*\n%s' \
+              "$DEVICE" "$ROM" "$ROM_FILENAME" \
+              "$START_WIB" "$END_WIB" "$DURATION" \
+              "$GOFILE_LINK")"
+
+      - name: Pull error.log
+        if: failure()
+        continue-on-error: true
+        run: |
+          cd "$ROM_PATH"
+          crave pull out/error.log || true
+
+          ERROR_LOG=$(find "$ROM_PATH" -name "error.log" | head -1)
+
+          if [ -f "$ERROR_LOG" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendDocument" \
+              -F chat_id="${{ secrets.TELEGRAM_TO }}" \
+              -F document=@"$ERROR_LOG" \
+              -F parse_mode="Markdown" \
+              -F caption="$(printf '💥 *Build Gagal*\n\n📱 Device: `%s`\n🗂 ROM: `%s`\n\n🕐 Mulai: %s\n🕑 Selesai: %s\n⏱ Durasi: %s\n\n📋 Error log terlampir.' \
+                "$DEVICE" "$ROM" "$START_WIB" "$END_WIB" "$DURATION")"
+          else
+            echo "error.log tidak ditemukan."
+          fi
+
+      - name: Notify failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_TO }}" \
+            -d parse_mode="Markdown" \
+            -d text="$(printf '💥 *Build Gagal!*\n\n📱 Device: `%s`\n🗂 ROM: `%s`\n\n🕐 Mulai: %s\n🕑 Selesai: %s\n⏱ Durasi: %s\n\nCek error log yang dikirim sebelumnya.' \
+              "$DEVICE" "$ROM" "$START_WIB" "$END_WIB" "$DURATION")"
+
+      - name: Notify cancelled
+        if: cancelled()
+        continue-on-error: true
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_TO }}" \
+            -d parse_mode="Markdown" \
+            -d text="$(printf '⛔ *Build Di-cancel*\n\n📱 Device: `%s`\n🗂 ROM: `%s`\n\n🕐 Mulai: %s\n🕑 Selesai: %s\n⏱ Durasi: %s' \
+              "$DEVICE" "$ROM" "$START_WIB" "$END_WIB" "$DURATION")"
+
+      - name: Stop crave
+        if: cancelled()
+        run: |
+          cd "$ROM_PATH"
+          crave stop --all || true
+
+      # ── Auto requeue ──────────────────────────────────────────────
+      # Mode 'true'  : requeue sekali langsung, tanpa cek pending
+      # Mode 'always': requeue sampai MAX_REQUEUE, cek pending dulu
+      - name: Auto requeue
+        if: ${{ !cancelled() && (github.event.inputs.AUTO_REQUEUE == 'true' || github.event.inputs.AUTO_REQUEUE == 'always') }}
+        run: |
+          # Stop jika Crave di-cancel oleh user/admin (exit code 130)
+          if [ "$BUILD_EXIT_CODE" = "130" ]; then
+            echo "Build di-cancel dari Crave (exit 130), stop requeue."
+            exit 0
+          fi
+
+          # ── Mode 'true': requeue sekali langsung ─────────────────
+          if [ "${{ github.event.inputs.AUTO_REQUEUE }}" = "true" ]; then
+            echo "Requeue sekali, next AUTO_REQUEUE=false..."
+            curl -s -X POST \
+              -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/selfhosted.yml/dispatches" \
+              -d "{
+                \"ref\": \"main\",
+                \"inputs\": {
+                  \"ROM_FOLDER\":    \"${{ github.event.inputs.ROM_FOLDER }}\",
+                  \"DEVICE_NAME\":   \"${{ github.event.inputs.DEVICE_NAME }}\",
+                  \"CLEAN_BUILD\":   \"no\",
+                  \"AUTO_REQUEUE\":  \"false\",
+                  \"MAX_REQUEUE\":   \"3\",
+                  \"REQUEUE_COUNT\": \"0\"
+                }
+              }"
+            echo "Triggered sekali."
+            exit 0
+          fi
+
+          # ── Mode 'always': cek pending dulu ──────────────────────
+          sleep 10
+
+          PENDING=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=queued&per_page=1" \
+            | jq '.total_count // 0')
+
+          if [ "$PENDING" -gt 0 ]; then
+            echo "Sudah ada workflow pending, skip auto requeue."
+            exit 0
+          fi
+
+          # Ambil nilai dengan fallback supaya tidak kosong/null
+          CURRENT_COUNT="${{ github.event.inputs.REQUEUE_COUNT }}"
+          MAX="${{ github.event.inputs.MAX_REQUEUE }}"
+          CURRENT_COUNT="${CURRENT_COUNT:-0}"
+          MAX="${MAX:-3}"
+
+          if [ "$CURRENT_COUNT" -ge "$MAX" ]; then
+            echo "Sudah requeue $CURRENT_COUNT/$MAX kali, stop."
+            exit 0
+          fi
+
+          NEXT_COUNT=$((CURRENT_COUNT + 1))
+          echo "Auto requeue ke-$NEXT_COUNT dari $MAX..."
+
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/selfhosted.yml/dispatches" \
+            -d "{
+              \"ref\": \"main\",
+              \"inputs\": {
+                \"ROM_FOLDER\":    \"${{ github.event.inputs.ROM_FOLDER }}\",
+                \"DEVICE_NAME\":   \"${{ github.event.inputs.DEVICE_NAME }}\",
+                \"CLEAN_BUILD\":   \"no\",
+                \"AUTO_REQUEUE\":  \"always\",
+                \"MAX_REQUEUE\":   \"${MAX}\",
+                \"REQUEUE_COUNT\": \"${NEXT_COUNT}\"
+              }
+            }"
+          echo "Triggered, count $NEXT_COUNT/$MAX."
