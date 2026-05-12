@@ -213,9 +213,9 @@ jobs:
       - name: Clean build
         if: ${{ github.event.inputs.CLEAN_BUILD == 'yes' }}
         run: |
-          cd "$ROM_PATH"
-          crave ssh -- "rm -rf out/" || true
-          echo "out/ dibersihkan."
+          #cd "$ROM_PATH"
+          #crave ssh -- "rm -rf out/" || true
+          #echo "out/ dibersihkan."
 
       - name: Start build
         run: |
