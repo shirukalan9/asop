@@ -221,6 +221,7 @@ jobs:
         run: |
           cd "$ROM_PATH"
           set +e
+          sleep 30 
           crave run --no-patch -- "curl -sSL $SCRIPT_URL | bash"
           BUILD_EXIT_CODE=$?
           echo "BUILD_EXIT_CODE=$BUILD_EXIT_CODE" >> $GITHUB_ENV
@@ -363,7 +364,7 @@ jobs:
           fi
 
           # ── Mode 'always': cek pending dulu ──────────────────────
-          sleep 10
+          
 
           PENDING=$(curl -s \
             -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
