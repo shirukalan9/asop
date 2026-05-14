@@ -329,6 +329,9 @@ jobs:
           cd "$ROM_PATH"
           crave stop --all || true
 
+      - name: Kill devspace
+        run: crave stop --all && exit 0
+
       # ── Auto requeue ──────────────────────────────────────────────
       # Mode 'true'  : requeue sekali langsung, tanpa cek pending
       # Mode 'always': requeue sampai MAX_REQUEUE, cek pending dulu
